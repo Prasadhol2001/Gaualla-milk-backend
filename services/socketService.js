@@ -5,7 +5,8 @@ import pool from "../config.js";
 let io = null;
 
 export function initSocket(httpServer) {
-  io = new Server(httpServer, {
+  io = new Server(httpServer, 
+    {
     cors: {
       origin: (origin, callback) => callback(null, true),
       methods: ["GET", "POST"],
