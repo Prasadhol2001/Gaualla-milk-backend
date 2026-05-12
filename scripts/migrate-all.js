@@ -2,13 +2,13 @@ import db from "../config/db.js";
 
 async function migrateAll() {
   let connection;
+
   try {
     connection = await db.getConnection();
     await connection.beginTransaction();
 
     console.log("🚀 Running full database migration...\n");
 
-    // ─── 1. users ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS users (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -22,7 +22,6 @@ async function migrateAll() {
     `);
     console.log("✅ users");
 
-    // ─── 2. admins ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS admins (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -35,7 +34,19 @@ async function migrateAll() {
     `);
     console.log("✅ admins");
 
-    // ─── 3. categories ───
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS newsletter_subscribers (
+        id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        email VARCHAR(255) NOT NULL,
+        phone VARCHAR(20) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_newsletter_email (email),
+        UNIQUE KEY unique_newsletter_phone (phone)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log("✅ newsletter_subscribers");
+
     await connection.query(`
       CREATE TABLE IF NOT EXISTS categories (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -47,7 +58,6 @@ async function migrateAll() {
     `);
     console.log("✅ categories");
 
-    // ─── 4. products (depends on categories) ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS products (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -71,7 +81,6 @@ async function migrateAll() {
     `);
     console.log("✅ products");
 
-    // ─── 5. newaddresses (depends on users) ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS newaddresses (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -97,23 +106,20 @@ async function migrateAll() {
         CONSTRAINT fk_newaddresses_user FOREIGN KEY (site_user_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-    // Ensure fcm_token and device_platform columns exist on users table
+
     try {
       await connection.query(`ALTER TABLE users ADD COLUMN fcm_token TEXT DEFAULT NULL`);
-    } catch (_) { /* column already exists */ }
+    } catch (_) {}
     try {
       await connection.query(`ALTER TABLE users ADD COLUMN device_platform VARCHAR(10) DEFAULT 'android'`);
-    } catch (_) { /* column already exists */ }
-
-    // Ensure address_type includes 'office' on existing tables
+    } catch (_) {}
     try {
       await connection.query(`
         ALTER TABLE newaddresses MODIFY COLUMN address_type ENUM('home','work','office','other') DEFAULT 'home'
       `);
-    } catch (_) { /* column already correct */ }
+    } catch (_) {}
     console.log("✅ newaddresses");
 
-    // ─── 6. carts (depends on users, products) ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS carts (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -131,7 +137,6 @@ async function migrateAll() {
     `);
     console.log("✅ carts");
 
-    // ─── 7. orders (depends on users, newaddresses) ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS orders (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -153,16 +158,13 @@ async function migrateAll() {
         CONSTRAINT fk_order_address FOREIGN KEY (address_id) REFERENCES newaddresses(id) ON DELETE SET NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-    console.log("✅ orders");
-
-    // Ensure orders.status ENUM includes out_for_delivery
     try {
       await connection.query(`
         ALTER TABLE orders MODIFY COLUMN status ENUM('pending','processing','out_for_delivery','completed','cancelled','refunded') NOT NULL DEFAULT 'pending'
       `);
-    } catch (_) { /* already correct */ }
+    } catch (_) {}
+    console.log("✅ orders");
 
-    // ─── 8. order_items (depends on orders, products) ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS order_items (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -183,7 +185,6 @@ async function migrateAll() {
     `);
     console.log("✅ order_items");
 
-    // ─── 9. banners ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS banners (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -194,7 +195,6 @@ async function migrateAll() {
     `);
     console.log("✅ banners");
 
-    // ─── 10. blogs ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS blogs (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -214,7 +214,6 @@ async function migrateAll() {
     `);
     console.log("✅ blogs");
 
-    // ─── 11. wishlists (depends on users, products) ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS wishlists (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -228,7 +227,6 @@ async function migrateAll() {
     `);
     console.log("✅ wishlists");
 
-    // ─── 12. riders ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS riders (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -255,7 +253,6 @@ async function migrateAll() {
     `);
     console.log("✅ riders");
 
-    // ─── 13. order_assignments (depends on orders, riders) ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS order_assignments (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -286,7 +283,6 @@ async function migrateAll() {
     `);
     console.log("✅ order_assignments");
 
-    // ─── 14. rider_location_history (depends on riders) ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS rider_location_history (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -302,7 +298,6 @@ async function migrateAll() {
     `);
     console.log("✅ rider_location_history");
 
-    // ─── 15. notifications ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS notifications (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -322,7 +317,6 @@ async function migrateAll() {
     `);
     console.log("✅ notifications");
 
-    // ─── 16. rider_earnings (depends on riders, order_assignments) ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS rider_earnings (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -343,9 +337,8 @@ async function migrateAll() {
     `);
     console.log("✅ rider_earnings");
 
-    // ─── 17. Alter orders — add delivery columns if missing ───
-    const [cols] = await connection.query(`SHOW COLUMNS FROM orders LIKE 'delivery_status'`);
-    if (cols.length === 0) {
+    const [deliveryCols] = await connection.query(`SHOW COLUMNS FROM orders LIKE 'delivery_status'`);
+    if (deliveryCols.length === 0) {
       await connection.query(`
         ALTER TABLE orders
           ADD COLUMN assigned_rider_id BIGINT(20) UNSIGNED DEFAULT NULL,
@@ -361,7 +354,6 @@ async function migrateAll() {
       console.log("✅ orders → delivery columns already exist");
     }
 
-    // ─── 18. payment_links (depends on orders, users) ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS payment_links (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -394,7 +386,6 @@ async function migrateAll() {
     `);
     console.log("✅ payment_links");
 
-    // ─── 19. transactions (depends on payment_links, orders, users) ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS transactions (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -443,7 +434,6 @@ async function migrateAll() {
     `);
     console.log("✅ transactions");
 
-    // ─── 20. refunds (depends on transactions, orders) ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS refunds (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -473,7 +463,6 @@ async function migrateAll() {
     `);
     console.log("✅ refunds");
 
-    // ─── 21. webhook_events ───
     await connection.query(`
       CREATE TABLE IF NOT EXISTS webhook_events (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -505,17 +494,22 @@ async function migrateAll() {
     console.log("✅ webhook_events");
 
     await connection.commit();
-    console.log("\n🎉 All 21 tables migrated successfully!");
-
-  } catch (err) {
-    if (connection) await connection.rollback();
-    console.error("❌ Migration failed:", err);
-    process.exit(1);
+    console.log("🎉 All migrations completed successfully!");
+  } catch (error) {
+    if (connection) {
+      await connection.rollback();
+    }
+    console.error("❌ Migration failed:", error);
+    throw error;
   } finally {
-    if (connection) connection.release();
-    await db.end();
-    process.exit(0);
+    if (connection) {
+      connection.release();
+    }
   }
 }
 
-migrateAll();
+migrateAll()
+  .then(() => process.exit(0))
+  .catch(() => process.exit(1));
+
+export default migrateAll;

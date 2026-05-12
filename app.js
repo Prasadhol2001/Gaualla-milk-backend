@@ -16,6 +16,7 @@ import paymentLinkRoutes from "./Route/paymentLinkRoutes.js"
 import webhookRoutes from "./Route/webhookRoutes.js"
 import paymentAdminRoutes from "./Route/paymentAdminRoutes.js"
 import orderAdminRoutes from "./Route/orderAdminRoutes.js"
+import newsletterRoutes from "./Route/newsletterRoutes.js"
 import db from "./config/db.js"   
 import adminRoutes from "./Route/adminRoutes.js"
 import userRoutes from "./Route/userRoutes.js";
@@ -90,6 +91,7 @@ app.use("/api/user/cart",CartRoute)
 app.use("/api/user/address",AddressRoute)
 app.use("/api/user/order",orderRoute)
 app.use("/api/user/payment-links", paymentLinkRoutes);
+app.use("/api/newsletter", newsletterRoutes);
 
 app.use('/api/user/razorpay', razorpayRoutes);
 app.use("/api/user/wishlist", wishlistRoutes);
