@@ -59,6 +59,22 @@ async function migrateAll() {
     console.log("✅ categories");
 
     await connection.query(`
+      CREATE TABLE IF NOT EXISTS offers (
+        id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        offer_title VARCHAR(255) NOT NULL,
+        offer_percent DECIMAL(5,2) NOT NULL,
+        start_time DATETIME NOT NULL,
+        end_time DATETIME NOT NULL,
+        status ENUM('active','inactive','scheduled','expired') NOT NULL DEFAULT 'inactive',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_status (status),
+        INDEX idx_time (start_time, end_time)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log("✅ offers");
+
+    await connection.query(`
       CREATE TABLE IF NOT EXISTS products (
         id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         category_id BIGINT(20) UNSIGNED NOT NULL,
