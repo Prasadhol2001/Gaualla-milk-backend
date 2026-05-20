@@ -12,6 +12,7 @@ import AddressRoute from "./Route/addressRoutes.js"
 import orderRoute from "./Route/orderRoutes.js"
 import blogRoute from "./Route/blogRoute.js"
 import razorpayRoutes from "./Route/Razerpay.js"
+import walletRoutes from "./Route/walletRoutes.js"
 import paymentLinkRoutes from "./Route/paymentLinkRoutes.js"
 import webhookRoutes from "./Route/webhookRoutes.js"
 import paymentAdminRoutes from "./Route/paymentAdminRoutes.js"
@@ -29,6 +30,7 @@ import assignmentRoutes from "./Route/assignmentRoutes.js"
 import settlementRoutes from "./Route/settlementRoutes.js"
 import wishlistRoutes from "./Route/wishlistRoutes.js"
 import { initSocket } from "./services/socketService.js"
+import { startScheduler } from "./services/schedulerService.js"
 
 
 dotenv.config()
@@ -92,6 +94,7 @@ app.use("/api/user/",loginSignup)
 app.use("/api/user/cart",CartRoute)
 app.use("/api/user/address",AddressRoute)
 app.use("/api/user/order",orderRoute)
+app.use("/api/user/wallet", walletRoutes)
 app.use("/api/user/payment-links", paymentLinkRoutes);
 app.use("/api/newsletter", newsletterRoutes);
 
@@ -113,6 +116,8 @@ const PORT = process.env.PORT || 9002;
 
 const httpServer = createServer(app);
 initSocket(httpServer);
+
+startScheduler();
 
 httpServer.listen(PORT, () => {
     console.log(`http://localhost:${PORT}`)

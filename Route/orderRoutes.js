@@ -7,6 +7,7 @@ import {
   getSingleOrder,
   verifyOrder,
   getRazorpayKey,
+  payViaWallet,
 } from "../controller/user/razerpayController.js";
 import { getOrderTracking, getNotifications, markNotificationsRead } from "../controller/user/trackingController.js";
 
@@ -16,6 +17,7 @@ route.get("/key", userMiddleware, getRazorpayKey)
 route.post("/create",userMiddleware,createOrder)
 route.post("/create-dev", userMiddleware, createOrderDevBypass)
 route.post("/verify",userMiddleware,verifyOrder)
+route.post("/pay-wallet", userMiddleware, payViaWallet)
 route.get("/getorder",userMiddleware,getOrder)
 route.get("/getsingleorder/:id",userMiddleware,getSingleOrder)
 

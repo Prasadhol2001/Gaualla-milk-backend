@@ -159,7 +159,7 @@ async function migrateAll() {
         site_user_id BIGINT(20) UNSIGNED NOT NULL,
         address_id BIGINT(20) UNSIGNED DEFAULT NULL,
         total_amount DECIMAL(12,2) NOT NULL,
-        status ENUM('pending','processing','out_for_delivery','completed','cancelled','refunded') NOT NULL DEFAULT 'pending',
+        status ENUM('pending','processing','out_for_delivery','completed','cancelled','refunded','on_hold_insufficient_funds') NOT NULL DEFAULT 'pending',
         payment_status ENUM('pending','paid','failed','refunded') NOT NULL DEFAULT 'pending',
         type ENUM('onetime','daily','alternative','weekly','monthly') NOT NULL DEFAULT 'onetime',
         alternative_dates JSON DEFAULT NULL,
@@ -176,7 +176,7 @@ async function migrateAll() {
     `);
     try {
       await connection.query(`
-        ALTER TABLE orders MODIFY COLUMN status ENUM('pending','processing','out_for_delivery','completed','cancelled','refunded') NOT NULL DEFAULT 'pending'
+        ALTER TABLE orders MODIFY COLUMN status ENUM('pending','processing','out_for_delivery','completed','cancelled','refunded','on_hold_insufficient_funds') NOT NULL DEFAULT 'pending'
       `);
     } catch (_) {}
     console.log("✅ orders");
@@ -508,6 +508,70 @@ async function migrateAll() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
     console.log("✅ webhook_events");
+
+    // wallets and wallet_transactions tables
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS wallets (
+        id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        user_id BIGINT(20) UNSIGNED NOT NULL UNIQUE,
+        main_balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        cashback_balance DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        status VARCHAR(20) NOT NULL DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        CONSTRAINT fk_wallet_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log("✅ wallets");
+
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS wallet_transactions (
+        id BIGINT(20) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        wallet_id BIGINT(20) UNSIGNED NOT NULL,
+        type ENUM('credit', 'debit') NOT NULL,
+        source ENUM('topup', 'cashback', 'order_payment', 'subscription_deduction', 'refund', 'admin_adjustment') NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        main_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        cashback_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+        reference_id VARCHAR(100) DEFAULT NULL,
+        title VARCHAR(255) NOT NULL,
+        description VARCHAR(500) DEFAULT NULL,
+        status ENUM('pending', 'success', 'failed') NOT NULL DEFAULT 'success',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_wallet (wallet_id),
+        INDEX idx_type (type),
+        INDEX idx_source (source),
+        CONSTRAINT fk_wallet_transaction_wallet FOREIGN KEY (wallet_id) REFERENCES wallets(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log("✅ wallet_transactions");
+
+    // Alter orders table to modify type and add columns if they don't exist
+    try {
+      await connection.query(`
+        ALTER TABLE orders 
+          MODIFY COLUMN type ENUM('onetime','daily','alternative','weekly','monthly','custom_dates') NOT NULL DEFAULT 'onetime'
+      `);
+      console.log("✅ orders → type ENUM modified to include custom_dates");
+    } catch (e) {
+      console.log("⚠️ Error modifying orders type ENUM:", e.message);
+    }
+
+    try {
+      await connection.query(`
+        ALTER TABLE orders
+          ADD COLUMN payment_method ENUM('razorpay', 'wallet') NOT NULL DEFAULT 'razorpay'
+      `);
+      console.log("✅ orders → payment_method column added");
+    } catch (_) {}
+
+    try {
+      await connection.query(`
+        ALTER TABLE orders
+          ADD COLUMN custom_delivery_dates JSON DEFAULT NULL
+      `);
+      console.log("✅ orders → custom_delivery_dates column added");
+    } catch (_) {}
 
     await connection.commit();
     console.log("🎉 All migrations completed successfully!");

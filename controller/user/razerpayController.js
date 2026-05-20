@@ -144,59 +144,59 @@ export const createOrderDevBypass = async (req, res) => {
 };
 
 
- export const verifyOrder=async(req,res)=>{
-   try {
-const site_user_id= req.user.id;
+export const verifyOrder = async (req, res) => {
+  let connection;
+  try {
+    const site_user_id = req.user.id;
 
     const {
       razorpay_order_id,
       razorpay_payment_id,
       razorpay_signature,
-      
+      payment_method = "razorpay", // 'razorpay' or 'wallet'
+
       address_id,
       cart_items,
       total_amount,
       type,
-      selectedDates
+      selectedDates,
+      custom_delivery_dates
     } = req.body;
 
-    // ✅ Verify Razorpay signature
-    const sign = razorpay_order_id + "|" + razorpay_payment_id;
-    const expectedSign = crypto
-      .createHmac("sha256", razorpay.key_secret)
-      .update(sign.toString())
-      .digest("hex");
-
-    if (razorpay_signature !== expectedSign) {
-      return res.status(400).json({ success: false, message: "Invalid signature" });
+    if (!address_id) {
+      return res.status(400).json({ success: false, message: "address_id is required" });
+    }
+    if (!Array.isArray(cart_items) || cart_items.length === 0) {
+      return res.status(400).json({ success: false, message: "cart_items are required" });
+    }
+    if (!total_amount || Number(total_amount) <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid total_amount" });
     }
 
-    // ✅ Map frontend type values to database enum values
-    // Frontend sends: 'one_time', 'daily', 'alternative'
-    // Database expects: 'onetime', 'daily', 'alternative'
+    // Map frontend type values to database enum values
     const typeMapping = {
       'one_time': 'onetime',
       'daily': 'daily',
       'alternative': 'alternative',
       'weekly': 'weekly',
-      'monthly': 'monthly'
+      'monthly': 'monthly',
+      'custom_dates': 'custom_dates'
     };
-    const dbType = typeMapping[type] || 'onetime'; // Default to 'onetime' if unknown
+    const dbType = typeMapping[type] || 'onetime';
 
-    //  Validate selectedDates for alternative orders
-    let alternativeDatesJson = null;
-    if (dbType === 'alternative') {
-      if (!selectedDates || !Array.isArray(selectedDates) || selectedDates.length === 0) {
+    // Format dates array to YYYY-MM-DD JSON string
+    const datesToSave = custom_delivery_dates || selectedDates;
+    let datesJson = null;
+    if (dbType === 'alternative' || dbType === 'custom_dates') {
+      if (!datesToSave || !Array.isArray(datesToSave) || datesToSave.length === 0) {
         return res.status(400).json({
           success: false,
-          message: "Alternative orders must have at least one selected date"
+          message: `${type} orders must have at least one selected date`
         });
       }
-      // Convert Date objects/ISO strings to ISO date format (YYYY-MM-DD) using local date
-      alternativeDatesJson = JSON.stringify(
-        selectedDates.map(date => {
+      datesJson = JSON.stringify(
+        datesToSave.map(date => {
           const d = new Date(date);
-          // Use local date (not UTC) to avoid timezone shifts
           const year = d.getFullYear();
           const month = String(d.getMonth() + 1).padStart(2, '0');
           const day = String(d.getDate()).padStart(2, '0');
@@ -205,143 +205,258 @@ const site_user_id= req.user.id;
       );
     }
 
-    // Insert into orders table with PENDING payment status
-    // Webhook will update to 'paid' when payment is confirmed (source of truth)
-    const [orderResult] = await pool.query(
-      `INSERT INTO orders (site_user_id, address_id, total_amount, status, payment_status, type, alternative_dates)
-       VALUES (?, ?, ?, 'pending', 'pending', ?, ?)`,
-      [site_user_id, address_id, total_amount, dbType, alternativeDatesJson]
-    );
+    if (payment_method === "wallet") {
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
 
-    const orderId = orderResult.insertId;
-
-    //  Insert each cart item into order_items table
-    for (const item of cart_items) {
-      await pool.query(
-        `INSERT INTO order_items (order_id, product_id, quantity, price, start_date)
-         VALUES (?, ?, ?, ?, CURDATE())`,
-        [orderId, item.product_id, item.quantity, item.price]
-      );
-    }
-
-    //  Create transaction record for webhook reconciliation
-    // This ensures webhooks can link payments to orders
-    try {
-      // Check if transaction already exists (created by webhook)
-      const [existing] = await pool.query(
-        `SELECT id FROM transactions WHERE razorpay_payment_id = ?`,
-        [razorpay_payment_id]
+      // Check balance
+      const [wallets] = await connection.query(
+        `SELECT id, main_balance, cashback_balance, (main_balance + cashback_balance) AS total_balance 
+         FROM wallets WHERE user_id = ? FOR UPDATE`,
+        [site_user_id]
       );
 
-      if (existing.length > 0) {
-        // Update existing transaction with order_id (webhook created it first)
-        await pool.query(
-          `UPDATE transactions 
-           SET order_id = ?, updated_at = CURRENT_TIMESTAMP
-           WHERE razorpay_payment_id = ?`,
-          [orderId, razorpay_payment_id]
+      let wallet;
+      if (wallets.length === 0) {
+        // Create wallet if not exists
+        const [newWallet] = await connection.query(`INSERT INTO wallets (user_id) VALUES (?)`, [site_user_id]);
+        wallet = { id: newWallet.insertId, main_balance: 0.00, cashback_balance: 0.00, total_balance: 0.00 };
+      } else {
+        wallet = wallets[0];
+      }
+
+      const totalBill = parseFloat(total_amount);
+      const mainBal = parseFloat(wallet.main_balance);
+      const cashbackBal = parseFloat(wallet.cashback_balance);
+      const totalBal = mainBal + cashbackBal;
+
+      if (totalBal < totalBill) {
+        connection.release();
+        return res.status(400).json({
+          success: false,
+          error_code: "INSUFFICIENT_WALLET_BALANCE",
+          message: `Insufficient wallet balance (₹${totalBal.toFixed(2)}) to complete this payment of ₹${totalBill.toFixed(2)}. Please top up your wallet.`
+        });
+      }
+
+      // Deduct cashback balance first, then main balance
+      let cashbackDeduct = 0.00;
+      let mainDeduct = 0.00;
+
+      if (cashbackBal >= totalBill) {
+        cashbackDeduct = totalBill;
+      } else {
+        cashbackDeduct = cashbackBal;
+        mainDeduct = totalBill - cashbackBal;
+      }
+
+      const newCashbackBal = cashbackBal - cashbackDeduct;
+      const newMainBal = mainBal - mainDeduct;
+
+      // Update wallet balance
+      await connection.query(
+        `UPDATE wallets SET main_balance = ?, cashback_balance = ? WHERE id = ?`,
+        [newMainBal, newCashbackBal, wallet.id]
+      );
+
+      // Insert Order into DB with 'paid' status
+      const [orderResult] = await connection.query(
+        `INSERT INTO orders (site_user_id, address_id, total_amount, status, payment_status, type, alternative_dates, custom_delivery_dates, payment_method)
+         VALUES (?, ?, ?, 'processing', 'paid', ?, ?, ?, 'wallet')`,
+        [site_user_id, address_id, totalBill, dbType, datesJson, datesJson]
+      );
+      const orderId = orderResult.insertId;
+
+      // Insert order items
+      for (const item of cart_items) {
+        await connection.query(
+          `INSERT INTO order_items (order_id, product_id, quantity, price, start_date)
+           VALUES (?, ?, ?, ?, CURDATE())`,
+          [orderId, item.product_id, item.quantity, item.price]
         );
-        console.log(` Transaction record updated for payment ${razorpay_payment_id} linked to order ${orderId}`);
-        
-        // If webhook already confirmed payment, update order status
-        const [txn] = await pool.query(
-          `SELECT status, captured FROM transactions WHERE razorpay_payment_id = ?`,
+      }
+
+      // Insert Wallet Transaction debit
+      await connection.query(
+        `INSERT INTO wallet_transactions (wallet_id, type, source, amount, main_amount, cashback_amount, reference_id, title, description, status)
+         VALUES (?, 'debit', 'order_payment', ?, ?, ?, ?, 'Order Payment', ?, 'success')`,
+        [
+          wallet.id,
+          totalBill,
+          mainDeduct,
+          cashbackDeduct,
+          String(orderId),
+          `Paid for order #${orderId} using Gaualla Wallet`
+        ]
+      );
+
+      // Insert into main transactions log
+      try {
+        await connection.query(
+          `INSERT INTO transactions (site_user_id, order_id, amount, status, captured, payment_method, description)
+           VALUES (?, ?, ?, 'captured', true, 'wallet', ?)`,
+          [
+            site_user_id,
+            orderId,
+            totalBill,
+            `Paid via Wallet: main ₹${mainDeduct}, cashback ₹${cashbackDeduct}`
+          ]
+        );
+      } catch (txnErr) {
+        console.warn("⚠️ Non-critical error logging main transaction:", txnErr.message);
+      }
+
+      await connection.commit();
+      connection.release();
+      connection = null;
+
+      // Notify User
+      notifyUser(site_user_id, "Order Placed!", `Your order #${orderId} has been successfully paid via Wallet.`, "new_order", { order_id: String(orderId) }).catch(() => {});
+
+      return res.json({
+        success: true,
+        message: "Payment successful. Order processed via Wallet.",
+        order_id: orderId,
+        deduction_summary: {
+          deducted_from_main: mainDeduct,
+          deducted_from_cashback: cashbackDeduct,
+          remaining_wallet_balance: newMainBal + newCashbackBal
+        }
+      });
+
+    } else {
+      // Standard Razorpay Order Verification Flow
+      if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+        return res.status(400).json({ success: false, message: "Missing Razorpay payment parameters" });
+      }
+
+      const sign = razorpay_order_id + "|" + razorpay_payment_id;
+      const expectedSign = crypto
+        .createHmac("sha256", razorpay.key_secret)
+        .update(sign.toString())
+        .digest("hex");
+
+      if (razorpay_signature !== expectedSign) {
+        return res.status(400).json({ success: false, message: "Invalid signature" });
+      }
+
+      const [orderResult] = await pool.query(
+        `INSERT INTO orders (site_user_id, address_id, total_amount, status, payment_status, type, alternative_dates, custom_delivery_dates, payment_method)
+         VALUES (?, ?, ?, 'pending', 'pending', ?, ?, ?, 'razorpay')`,
+        [site_user_id, address_id, total_amount, dbType, datesJson, datesJson]
+      );
+
+      const orderId = orderResult.insertId;
+
+      for (const item of cart_items) {
+        await pool.query(
+          `INSERT INTO order_items (order_id, product_id, quantity, price, start_date)
+           VALUES (?, ?, ?, ?, CURDATE())`,
+          [orderId, item.product_id, item.quantity, item.price]
+        );
+      }
+
+      try {
+        const [existing] = await pool.query(
+          `SELECT id FROM transactions WHERE razorpay_payment_id = ?`,
           [razorpay_payment_id]
         );
-        if (txn.length > 0 && txn[0].captured && txn[0].status === 'captured') {
+
+        if (existing.length > 0) {
           await pool.query(
-            `UPDATE orders SET payment_status = 'paid', status = 'processing' WHERE id = ?`,
-            [orderId]
+            `UPDATE transactions SET order_id = ?, updated_at = CURRENT_TIMESTAMP WHERE razorpay_payment_id = ?`,
+            [orderId, razorpay_payment_id]
           );
-          console.log(` Order ${orderId} status updated to paid (webhook already confirmed)`);
-        } else {
-          // Even if webhook hasn't confirmed yet, check if payment was captured
-          // This handles cases where webhook is delayed or fails
-          try {
+          
+          const [txn] = await pool.query(
+            `SELECT status, captured FROM transactions WHERE razorpay_payment_id = ?`,
+            [razorpay_payment_id]
+          );
+          if (txn.length > 0 && txn[0].captured && txn[0].status === 'captured') {
+            await pool.query(
+              `UPDATE orders SET payment_status = 'paid', status = 'processing' WHERE id = ?`,
+              [orderId]
+            );
+          } else {
             const paymentDetails = await razorpay.payments.fetch(razorpay_payment_id);
             if (paymentDetails.status === 'captured' || paymentDetails.captured === true) {
               await pool.query(
                 `UPDATE orders SET payment_status = 'paid', status = 'processing' WHERE id = ?`,
                 [orderId]
               );
-              // Also update transaction
               await pool.query(
                 `UPDATE transactions SET status = 'captured', captured = true WHERE razorpay_payment_id = ?`,
                 [razorpay_payment_id]
               );
-              console.log(` Order ${orderId} status updated to paid (payment verified via Razorpay API fallback)`);
             }
-          } catch (apiError) {
-            console.error("Error checking payment status from Razorpay:", apiError);
-            // Non-critical, continue - webhook will update it later
           }
-        }
-      } else {
-        // Create new transaction record (webhook hasn't arrived yet)
-        // Status will be updated by webhook when payment.captured arrives
-        await pool.query(
-          `INSERT INTO transactions (
-            razorpay_payment_id, razorpay_order_id, order_id, site_user_id,
-            amount, currency, status, captured, payment_method
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            razorpay_payment_id,
-            razorpay_order_id,
-            orderId,
-            site_user_id,
-            total_amount,
-            "INR",
-            "authorized", // Will be updated to 'captured' by webhook
-            false, // Will be updated to true by webhook
-            null, // Payment method will be updated by webhook if available
-          ]
-        );
-        console.log(` Transaction record created for payment ${razorpay_payment_id} linked to order ${orderId} (waiting for webhook confirmation)`);
-        
-        // Fallback: Check payment status directly from Razorpay API
-        // This ensures order is updated even if webhook is delayed
-        try {
-          const paymentDetails = await razorpay.payments.fetch(razorpay_payment_id);
-          if (paymentDetails.status === 'captured' || paymentDetails.captured === true) {
-            await pool.query(
-              `UPDATE orders SET payment_status = 'paid', status = 'processing' WHERE id = ?`,
-              [orderId]
-            );
-            await pool.query(
-              `UPDATE transactions SET status = 'captured', captured = true WHERE razorpay_payment_id = ?`,
-              [razorpay_payment_id]
-            );
-            console.log(` Order ${orderId} status updated to paid (payment verified via Razorpay API fallback)`);
+        } else {
+          let initialStatus = "authorized";
+          let captured = false;
+          
+          try {
+            const paymentDetails = await razorpay.payments.fetch(razorpay_payment_id);
+            if (paymentDetails.status === 'captured' || paymentDetails.captured === true) {
+              initialStatus = "captured";
+              captured = true;
+              await pool.query(
+                `UPDATE orders SET payment_status = 'paid', status = 'processing' WHERE id = ?`,
+                [orderId]
+              );
+            }
+          } catch (e) {
+            console.error("Razorpay payment fetch failed:", e.message);
           }
-        } catch (apiError) {
-          console.error("Error checking payment status from Razorpay (non-critical):", apiError);
-          // Non-critical, webhook will update it
+
+          await pool.query(
+            `INSERT INTO transactions (
+              razorpay_payment_id, razorpay_order_id, order_id, site_user_id,
+              amount, currency, status, captured, payment_method
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              razorpay_payment_id,
+              razorpay_order_id,
+              orderId,
+              site_user_id,
+              total_amount,
+              "INR",
+              initialStatus,
+              captured,
+              "razorpay"
+            ]
+          );
         }
+      } catch (txErr) {
+        console.error("⚠️ Transaction record error (non-blocking):", txErr.message);
       }
-    } catch (error) {
-      console.error("⚠️ Error creating/updating transaction record (non-critical):", error);
-      // Don't fail the order creation if transaction insert fails
+
+      notifyUser(site_user_id, "Order Confirmed!", `Your order #${orderId} has been placed successfully.`, "new_order", { order_id: String(orderId) }).catch(() => {});
+
+      return res.json({
+        success: true,
+        message: "Order created. Payment confirmation pending via webhook.",
+        order_id: orderId,
+        payment_status: "pending"
+      });
     }
-
-    notifyUser(site_user_id, "Order Confirmed!", `Your order #${orderId} has been placed successfully.`, "new_order", { order_id: String(orderId) }).catch(() => {});
-
-    return res.json({ 
-      success: true, 
-      message: "Order created. Payment confirmation pending via webhook.", 
-      order_id: orderId,
-      payment_status: "pending"
-    });
   } catch (error) {
+    if (connection) {
+      await connection.rollback();
+      connection.release();
+    }
     console.error("❌ Error in verifyOrder:", error);
-    // If order was created but error occurred later, still return order_id if available
-    const orderId = error.orderId || null;
-    res.status(500).json({ 
-      success: false, 
-      message: "Verification failed", 
-      order_id: orderId 
+    res.status(500).json({
+      success: false,
+      message: "Verification failed",
+      error: error.message
     });
   }
- }
+};
+
+export const payViaWallet = async (req, res) => {
+  req.body.payment_method = "wallet";
+  return verifyOrder(req, res);
+};
 
 
 export const getOrder = async (req, res) => {
@@ -398,11 +513,13 @@ console.log(ordersWithItems)
 export const getSingleOrder = async (req, res) => {
   const { id } = req.params;
   try {
-    // 1. Get the order with address
+    // 1. Get the order with address and rider details
     const [orders] = await pool.query(
-      `SELECT o.*, a.first_name, a.last_name, a.street, a.city, a.state, a.zip_code, a.country, a.latitude, a.longitude
+      `SELECT o.*, a.first_name, a.last_name, a.street, a.city, a.state, a.zip_code, a.country, a.latitude, a.longitude,
+              r.name AS delivery_man_name, r.phone AS delivery_man_phone, r.vehicle_type, r.vehicle_number
        FROM orders o
        LEFT JOIN newaddresses a ON o.address_id = a.id
+       LEFT JOIN riders r ON o.assigned_rider_id = r.id
        WHERE o.id = ?
        ORDER BY o.created_at DESC`,
       [id]
@@ -423,9 +540,30 @@ export const getSingleOrder = async (req, res) => {
       [order.id]
     );
 
+    // Format custom delivery dates
+    let customDates = null;
+    const rawDates = order.custom_delivery_dates || order.alternative_dates;
+    if (rawDates) {
+      try {
+        customDates = typeof rawDates === "string" ? JSON.parse(rawDates) : rawDates;
+      } catch (_) {
+        customDates = null;
+      }
+    }
+
+    // Format delivery vehicle info
+    let deliveryVehicle = null;
+    if (order.vehicle_type) {
+      deliveryVehicle = `${order.vehicle_type}${order.vehicle_number ? ` ${order.vehicle_number}` : ""}`.trim();
+    }
+
     // 3. Build the response
     const orderWithItems = {
       ...order,
+      custom_delivery_dates: customDates,
+      delivery_man_name: order.delivery_man_name || null,
+      delivery_man_phone: order.delivery_man_phone || null,
+      delivery_man_vehicle: deliveryVehicle,
       address: {
         first_name: order.first_name,
         last_name: order.last_name,
@@ -439,6 +577,10 @@ export const getSingleOrder = async (req, res) => {
       },
       items,
     };
+
+    // Clean up internal raw properties from order root level
+    delete orderWithItems.vehicle_type;
+    delete orderWithItems.vehicle_number;
 
     return res.json({ success: true, order: orderWithItems });
   } catch (error) {
