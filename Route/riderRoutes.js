@@ -11,6 +11,7 @@ import {
   startDelivery,
   deliverOrder,
   collectCOD,
+  markFailed,
   getDashboardStats,
 } from "../controller/rider/riderOrderController.js";
 import {
@@ -40,6 +41,7 @@ router.put("/orders/:id/reject", rejectOrder);
 router.put("/orders/:id/pickup", pickupOrder);
 router.put("/orders/:id/start-delivery", startDelivery);
 router.put("/orders/:id/deliver", deliverOrder);
+router.put("/orders/:id/fail", markFailed);
 router.put("/orders/:id/collect-cod", collectCOD);
 
 // Location

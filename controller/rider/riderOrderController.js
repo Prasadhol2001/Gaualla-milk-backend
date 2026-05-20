@@ -519,3 +519,127 @@ export const getDashboardStats = async (req, res) => {
     return res.status(500).json({ success: false, message: "Failed to fetch stats" });
   }
 };
+export const markFailed = async (req, res) => {
+  let connection;
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const riderId = req.rider.id;
+
+    if (!reason) {
+      return res.status(400).json({ success: false, message: "Reason for failure is required" });
+    }
+
+    const [assignments] = await pool.query(
+      `SELECT oa.*, o.site_user_id, o.payment_status, o.total_amount, o.payment_method
+       FROM order_assignments oa
+       JOIN orders o ON oa.order_id = o.id
+       WHERE oa.id = ? AND oa.rider_id = ?`,
+      [id, riderId]
+    );
+
+    if (assignments.length === 0) {
+      return res.status(404).json({ success: false, message: "Assignment not found" });
+    }
+
+    if (!["accepted", "picked_up", "in_transit"].includes(assignments[0].status)) {
+      return res.status(400).json({ success: false, message: "Order cannot be marked as failed from current status" });
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    // 1. Update status
+    await connection.query(
+      `UPDATE order_assignments SET status = 'failed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [id]
+    );
+
+    await connection.query(
+      `UPDATE orders SET delivery_status = 'failed', status = 'cancelled' WHERE id = ?`,
+      [assignments[0].order_id]
+    );
+
+    // 2. Automated Refund if paid via wallet
+    if (assignments[0].payment_method === 'wallet' && assignments[0].payment_status === 'paid') {
+      const site_user_id = assignments[0].site_user_id;
+      const amount = parseFloat(assignments[0].total_amount);
+
+      // Check if already refunded
+      const [existingRefund] = await connection.query(
+        `SELECT id FROM wallet_transactions WHERE reference_id = ? AND source = 'refund'`,
+        [String(assignments[0].order_id)]
+      );
+
+      if (existingRefund.length === 0) {
+        // Select or create wallet
+        const [wallets] = await connection.query(
+          `SELECT id, main_balance FROM wallets WHERE user_id = ? FOR UPDATE`,
+          [site_user_id]
+        );
+
+        if (wallets.length > 0) {
+          const walletId = wallets[0].id;
+          const oldMain = parseFloat(wallets[0].main_balance);
+          const newMain = oldMain + amount;
+
+          // Credit back to main balance
+          await connection.query(
+            `UPDATE wallets SET main_balance = ? WHERE id = ?`,
+            [newMain, walletId]
+          );
+
+          // Log refund transaction
+          await connection.query(
+            `INSERT INTO wallet_transactions (wallet_id, type, source, amount, main_amount, cashback_amount, reference_id, title, description, status)
+             VALUES (?, 'credit', 'refund', ?, ?, 0.00, ?, 'Refund for Failed Delivery', ?, 'success')`,
+            [
+              walletId,
+              amount,
+              amount,
+              String(assignments[0].order_id),
+              `Refund for order #${assignments[0].order_id} (Delivery failed: ${reason})`
+            ]
+          );
+
+          // Update order payment status
+          await connection.query(
+            `UPDATE orders SET payment_status = 'refunded' WHERE id = ?`,
+            [assignments[0].order_id]
+          );
+        }
+      }
+    }
+
+    await connection.commit();
+    connection.release();
+    connection = null;
+
+    emitToAdmins("order:failed", {
+      order_id: assignments[0].order_id,
+      assignment_id: id,
+      rider_id: riderId,
+      reason,
+    });
+
+    emitOrderUpdate(assignments[0].order_id, "order:status_changed", {
+      delivery_status: "failed",
+    });
+
+    notifyUser(assignments[0].site_user_id,
+      "Delivery Failed",
+      `We couldn't deliver your order. ${assignments[0].payment_method === 'wallet' ? 'Refund initiated to your wallet.' : 'Our team will contact you soon.'}`,
+      "order_failed",
+      { order_id: String(assignments[0].order_id) }
+    ).catch(() => {});
+
+    return res.json({ success: true, message: "Order marked as failed and refund processed if applicable" });
+  } catch (error) {
+    if (connection) {
+      await connection.rollback();
+      connection.release();
+    }
+    console.error("Mark failed error:", error);
+    return res.status(500).json({ success: false, message: "Failed to update status" });
+  }
+};
