@@ -11,8 +11,8 @@ export const riderLogin = async (req, res) => {
     }
 
     const [riders] = await pool.query(
-      `SELECT * FROM riders WHERE phone = ? LIMIT 1`,
-      [phone]
+      `SELECT * FROM riders WHERE phone = ? OR email = ? LIMIT 1`,
+      [phone, phone]
     );
 
     if (riders.length === 0) {
