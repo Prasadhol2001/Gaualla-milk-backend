@@ -208,24 +208,85 @@ export const getOrderById = async (req, res) => {
 
     const order = orders[0];
 
-    // Parse alternative_dates JSON if type is 'alternative'
-    let alternativeDates = null;
-    if (order.type === 'alternative' && order.alternative_dates) {
+    // Parse custom delivery dates
+    let customDates = null;
+    const rawDates = order.custom_delivery_dates || order.alternative_dates;
+    if (rawDates) {
       try {
-        // If it's already an array, use it directly
-        if (Array.isArray(order.alternative_dates)) {
-          alternativeDates = order.alternative_dates;
-        } else if (typeof order.alternative_dates === 'string') {
-          // Try to clean up the string before parsing
-          const cleanedString = order.alternative_dates.trim();
-          alternativeDates = JSON.parse(cleanedString);
-        }
-      } catch (e) {
-        console.error(`Error parsing alternative_dates for order ${order.id}:`, e.message);
-        console.error('Raw value:', JSON.stringify(order.alternative_dates));
-        // If parsing fails, return null (dates won't be displayed but won't crash)
-        alternativeDates = null;
+        customDates = typeof rawDates === "string" ? JSON.parse(rawDates) : rawDates;
+      } catch (_) {
+        customDates = null;
       }
+    }
+
+    // Format daily deliveries status tracking summary
+    let dailyDeliveriesSummary = [];
+    if (customDates && Array.isArray(customDates)) {
+      const todayStr = new Date().toISOString().split("T")[0];
+      const [assignments] = await pool.query(
+        `SELECT oa.id, oa.status, oa.assigned_at, oa.delivered_at, oa.rider_id, r.name AS rider_name, r.phone AS rider_phone
+         FROM order_assignments oa
+         LEFT JOIN riders r ON oa.rider_id = r.id
+         WHERE oa.order_id = ?
+         ORDER BY oa.assigned_at ASC`,
+        [order.id]
+      );
+
+      dailyDeliveriesSummary = customDates.map(dateStr => {
+        const dayAssignments = assignments.filter(a => {
+          const aDate = new Date(a.assigned_at).toISOString().split("T")[0];
+          return aDate === dateStr;
+        });
+
+        let match = null;
+        if (dayAssignments.length > 0) {
+          const delivered = dayAssignments.find(a => a.status === "delivered");
+          const active = dayAssignments.find(a => ["accepted", "picked_up", "in_transit"].includes(a.status));
+          const pending = dayAssignments.find(a => a.status === "pending");
+          match = delivered || active || pending || dayAssignments[dayAssignments.length - 1];
+        }
+
+        let status = "pending";
+        let assignmentDetails = null;
+
+        if (match) {
+          assignmentDetails = {
+            assignment_id: match.id,
+            rider_id: match.rider_id,
+            rider_name: match.rider_name,
+            rider_phone: match.rider_phone,
+            delivered_at: match.delivered_at,
+          };
+
+          if (match.status === "delivered") {
+            status = "delivered";
+          } else if (match.status === "failed") {
+            status = "failed";
+          } else if (["pending", "accepted", "picked_up", "in_transit"].includes(match.status)) {
+            status = "out_for_delivery";
+          } else if (match.status === "rejected") {
+            status = "pending";
+          }
+        } else {
+          if (dateStr < todayStr) {
+            status = "failed";
+          } else if (dateStr === todayStr) {
+            if (order.status === "on_hold_insufficient_funds") {
+              status = "on_hold";
+            } else {
+              status = "pending";
+            }
+          } else {
+            status = "pending";
+          }
+        }
+
+        return {
+          date: dateStr,
+          status: status,
+          assignment: assignmentDetails
+        };
+      });
     }
 
     // Get order items
@@ -263,7 +324,8 @@ export const getOrderById = async (req, res) => {
       success: true,
       order: {
         ...order,
-        alternative_dates: alternativeDates, // Only include if parsed successfully
+        custom_delivery_dates: customDates,
+        daily_deliveries_summary: dailyDeliveriesSummary,
         address: {
           first_name: order.first_name,
           last_name: order.last_name,
@@ -282,7 +344,7 @@ export const getOrderById = async (req, res) => {
           phone: order.user_phone,
         },
         items: items || [],
-        alternative_dates: alternativeDates,
+        alternative_dates: order.type === 'alternative' ? customDates : null,
         transactions: transactions || [],
         refunds: refunds || [],
       },

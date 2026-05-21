@@ -94,13 +94,11 @@ export const runDailyScheduler = async () => {
           { order_id: String(order.id) }
         ).catch(() => {});
         
-        // Ensure status is processing (in case it was on_hold)
-        if (order.status !== 'processing') {
-          await connection.query(
-            `UPDATE orders SET status = 'processing' WHERE id = ?`,
-            [order.id]
-          );
-        }
+        // Ensure status is processing (in case it was on_hold) and reset today's delivery status / assignment
+        await connection.query(
+          `UPDATE orders SET status = 'processing', delivery_status = 'unassigned', assigned_rider_id = NULL WHERE id = ?`,
+          [order.id]
+        );
         continue;
       }
 
@@ -187,9 +185,9 @@ export const runDailyScheduler = async () => {
             ]
           );
 
-          // Update order status back to processing in case it was on hold
+          // Update order status back to processing, mark payment_status, and reset today's delivery status / assignment
           await connection.query(
-            `UPDATE orders SET status = 'processing', payment_status = 'paid' WHERE id = ?`,
+            `UPDATE orders SET status = 'processing', payment_status = 'paid', delivery_status = 'unassigned', assigned_rider_id = NULL WHERE id = ?`,
             [order.id]
           );
 

@@ -551,6 +551,76 @@ export const getSingleOrder = async (req, res) => {
       }
     }
 
+    // Format daily deliveries status tracking summary
+    let dailyDeliveriesSummary = [];
+    if (customDates && Array.isArray(customDates)) {
+      const todayStr = new Date().toISOString().split("T")[0];
+      const [assignments] = await pool.query(
+        `SELECT oa.id, oa.status, oa.assigned_at, oa.delivered_at, oa.rider_id, r.name AS rider_name, r.phone AS rider_phone
+         FROM order_assignments oa
+         LEFT JOIN riders r ON oa.rider_id = r.id
+         WHERE oa.order_id = ?
+         ORDER BY oa.assigned_at ASC`,
+        [order.id]
+      );
+
+      dailyDeliveriesSummary = customDates.map(dateStr => {
+        const dayAssignments = assignments.filter(a => {
+          const aDate = new Date(a.assigned_at).toISOString().split("T")[0];
+          return aDate === dateStr;
+        });
+
+        let match = null;
+        if (dayAssignments.length > 0) {
+          const delivered = dayAssignments.find(a => a.status === "delivered");
+          const active = dayAssignments.find(a => ["accepted", "picked_up", "in_transit"].includes(a.status));
+          const pending = dayAssignments.find(a => a.status === "pending");
+          match = delivered || active || pending || dayAssignments[dayAssignments.length - 1];
+        }
+
+        let status = "pending";
+        let assignmentDetails = null;
+
+        if (match) {
+          assignmentDetails = {
+            assignment_id: match.id,
+            rider_id: match.rider_id,
+            rider_name: match.rider_name,
+            rider_phone: match.rider_phone,
+            delivered_at: match.delivered_at,
+          };
+
+          if (match.status === "delivered") {
+            status = "delivered";
+          } else if (match.status === "failed") {
+            status = "failed";
+          } else if (["pending", "accepted", "picked_up", "in_transit"].includes(match.status)) {
+            status = "out_for_delivery";
+          } else if (match.status === "rejected") {
+            status = "pending";
+          }
+        } else {
+          if (dateStr < todayStr) {
+            status = "failed";
+          } else if (dateStr === todayStr) {
+            if (order.status === "on_hold_insufficient_funds") {
+              status = "on_hold";
+            } else {
+              status = "pending";
+            }
+          } else {
+            status = "pending";
+          }
+        }
+
+        return {
+          date: dateStr,
+          status: status,
+          assignment: assignmentDetails
+        };
+      });
+    }
+
     // Format delivery vehicle info
     let deliveryVehicle = null;
     if (order.vehicle_type) {
@@ -561,6 +631,7 @@ export const getSingleOrder = async (req, res) => {
     const orderWithItems = {
       ...order,
       custom_delivery_dates: customDates,
+      daily_deliveries_summary: dailyDeliveriesSummary,
       delivery_man_name: order.delivery_man_name || null,
       delivery_man_phone: order.delivery_man_phone || null,
       delivery_man_vehicle: deliveryVehicle,

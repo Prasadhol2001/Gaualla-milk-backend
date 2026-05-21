@@ -392,10 +392,22 @@ export const deliverOrder = async (req, res) => {
       [delivery_proof || null, id]
     );
 
-    await pool.query(
-      `UPDATE orders SET delivery_status = 'delivered', status = 'completed' WHERE id = ?`,
-      [assignments[0].order_id]
-    );
+    // If order type is a subscription (daily, alternative, weekly, monthly, custom_dates), keep order status as 'processing'
+    const [orderRows] = await pool.query(`SELECT type FROM orders WHERE id = ?`, [assignments[0].order_id]);
+    const orderType = orderRows.length > 0 ? orderRows[0].type : "onetime";
+    const isSubscription = ["daily", "alternative", "weekly", "monthly", "custom_dates"].includes(orderType);
+
+    if (isSubscription) {
+      await pool.query(
+        `UPDATE orders SET delivery_status = 'delivered', status = 'processing' WHERE id = ?`,
+        [assignments[0].order_id]
+      );
+    } else {
+      await pool.query(
+        `UPDATE orders SET delivery_status = 'delivered', status = 'completed' WHERE id = ?`,
+        [assignments[0].order_id]
+      );
+    }
 
     // Create earnings record
     await pool.query(

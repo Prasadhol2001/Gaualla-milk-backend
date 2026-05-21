@@ -164,6 +164,7 @@ export const creatProduct= async(req,res)=>{
       unit_quantity,
       details,
       one_time,
+      description2,
     } = req.body;
 
     // ✅ Validate required fields
@@ -208,8 +209,8 @@ export const creatProduct= async(req,res)=>{
 
     await pool.execute(
       `INSERT INTO products 
-      (category_id, name, slug, description, price, old_price, stock, unit_quantity, details, one_time, images) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (category_id, name, slug, description, price, old_price, stock, unit_quantity, details, one_time, images, description2) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         categoryIdNum,
         name.trim(),
@@ -222,6 +223,7 @@ export const creatProduct= async(req,res)=>{
         details || null,
         oneTimeFlag,
         images,
+        description2 || null,
       ]
     );
 
@@ -442,6 +444,7 @@ const updateProduct = async (req, res) => {
       unit_quantity,
       details,
       one_time,
+      description2,
     } = req.body;
 
     // Get current product
@@ -522,6 +525,7 @@ const updateProduct = async (req, res) => {
         details = ?,
         images = ?,
         one_time = ?,
+        description2 = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?`,
       [
@@ -536,6 +540,7 @@ const updateProduct = async (req, res) => {
         details || null,
         images,
         oneTimeFlag,
+        description2 || null,
         id,
       ]
     );

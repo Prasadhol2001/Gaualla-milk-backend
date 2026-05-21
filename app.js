@@ -64,7 +64,22 @@ console.log("🔔 Webhook endpoint registered at: /api/webhook-rz (Razorpay Dash
 
 app.use(express.json())
 app.use(cookieParser())
-app.use("/uploads", express.static("uploads"));
+
+// Middleware to serve video uploads inline and prevent download prompts
+app.use("/uploads", (req, res, next) => {
+  const ext = req.path.split('.').pop().toLowerCase();
+  const videoMimeTypes = {
+    mp4: "video/mp4",
+    webm: "video/webm",
+    ogg: "video/ogg",
+    mov: "video/quicktime",
+  };
+  if (videoMimeTypes[ext]) {
+    res.setHeader("Content-Type", videoMimeTypes[ext]);
+    res.setHeader("Content-Disposition", "inline");
+  }
+  next();
+}, express.static("uploads"));
 
 app.get("/",async(req,res)=>{
   return res.json({ working:true})
