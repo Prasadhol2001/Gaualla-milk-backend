@@ -1,16 +1,18 @@
 import pool from "../config.js";
 import { notifyUser } from "./firebaseService.js";
+import { generateDeliveryOTP } from "./assignmentService.js";
 
 /**
  * Main execution logic for daily subscriptions and wallet deductions.
  * Finds all active subscriptions (daily, alternative, custom_dates, etc.)
  * scheduled for delivery today.
  */
-export const runDailyScheduler = async () => {
+export const runDailyScheduler = async (simulateDate = null) => {
   console.log("⏰ [Scheduler] Starting daily subscription execution check...");
   let connection;
   try {
-    const d = new Date();
+    // Allow simulating a specific date for testing
+    const d = simulateDate ? new Date(simulateDate + 'T00:00:00') : new Date();
     const year = d.getFullYear();
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
@@ -18,7 +20,7 @@ export const runDailyScheduler = async () => {
     const dayOfWeek = d.getDay(); // 0 = Sunday, 1 = Monday, etc.
     const dayOfMonth = d.getDate();
 
-    console.log(`⏰ [Scheduler] Running for date: ${todayStr}`);
+    console.log(`⏰ [Scheduler] Running for date: ${todayStr}${simulateDate ? ' (SIMULATED)' : ''}`);
 
     connection = await pool.getConnection();
 
@@ -80,6 +82,25 @@ export const runDailyScheduler = async () => {
 
       // Check if order was already paid upfront (Razorpay checkout or full wallet checkout)
       const isUpfrontPaid = (order.payment_status === 'paid');
+
+      // Check if delivery is already completed for this date
+      const [existingDelivery] = await connection.query(
+        `SELECT id, status FROM order_assignments 
+         WHERE order_id = ? AND delivery_date = ? AND status = 'delivered'`,
+        [order.id, todayStr]
+      );
+      if (existingDelivery.length > 0) {
+        console.log(`⏰ [Scheduler] Order #${order.id} already has a completed delivery for ${todayStr}. Skipping.`);
+        continue;
+      }
+
+      // Generate a fresh OTP for today's delivery
+      const newOtp = generateDeliveryOTP();
+      await connection.query(
+        `UPDATE orders SET delivery_otp = ?, current_delivery_date = ? WHERE id = ?`,
+        [newOtp, todayStr, order.id]
+      );
+      console.log(`⏰ [Scheduler] Order #${order.id}: New delivery OTP generated for ${todayStr}.`);
 
       if (isUpfrontPaid) {
         // Already paid upfront - no deduction needed. Log dispatch and continue.
@@ -192,7 +213,7 @@ export const runDailyScheduler = async () => {
           );
 
           await connection.commit();
-          console.log(`⏰ [Scheduler] Order #${order.id} successfully charged ₹${dailyAmount} and dispatched.`);
+          console.log(`⏰ [Scheduler] Order #${order.id} successfully charged ₹${dailyAmount} and dispatched. New OTP generated.`);
 
           // Notify User
           notifyUser(

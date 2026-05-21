@@ -4,7 +4,6 @@ import { adminMiddleware } from "../middlewere/adminMiddleware.js";
 import { fetchUsers } from "../controller/user/userController.js";
 import { getDashboardStats } from "../controller/admin/dashboardController.js";
 import { getAdminNotifications, markAdminNotificationsRead } from "../controller/admin/notificationAdminController.js";
-import { runDailyScheduler } from "../services/schedulerService.js";
 import { uploadsingleimg } from "../helper/storageImage.js";
 import fs from "fs";
 
@@ -23,15 +22,6 @@ routes.get("/dashboard/stats", adminMiddleware, getDashboardStats);
 routes.get("/notifications", adminMiddleware, getAdminNotifications);
 routes.put("/notifications/read", adminMiddleware, markAdminNotificationsRead);
 
-// Debug / Trigger route
-routes.post("/trigger-scheduler", async (req, res) => {
-  try {
-    await runDailyScheduler();
-    return res.json({ success: true, message: "Scheduler triggered manually." });
-  } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
 
 // Admin image upload for rich-text editors (Jodit)
 routes.post(

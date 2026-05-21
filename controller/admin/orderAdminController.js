@@ -224,7 +224,7 @@ export const getOrderById = async (req, res) => {
     if (customDates && Array.isArray(customDates)) {
       const todayStr = new Date().toISOString().split("T")[0];
       const [assignments] = await pool.query(
-        `SELECT oa.id, oa.status, oa.assigned_at, oa.delivered_at, oa.rider_id, r.name AS rider_name, r.phone AS rider_phone
+        `SELECT oa.id, oa.status, oa.assigned_at, oa.delivered_at, oa.delivery_date, oa.rider_id, r.name AS rider_name, r.phone AS rider_phone
          FROM order_assignments oa
          LEFT JOIN riders r ON oa.rider_id = r.id
          WHERE oa.order_id = ?
@@ -234,8 +234,11 @@ export const getOrderById = async (req, res) => {
 
       dailyDeliveriesSummary = customDates.map(dateStr => {
         const dayAssignments = assignments.filter(a => {
-          const aDate = new Date(a.assigned_at).toISOString().split("T")[0];
-          return aDate === dateStr;
+          // Match by delivery_date if available, fallback to assigned_at date
+          const matchDate = a.delivery_date
+            ? new Date(a.delivery_date).toISOString().split("T")[0]
+            : new Date(a.assigned_at).toISOString().split("T")[0];
+          return matchDate === dateStr;
         });
 
         let match = null;

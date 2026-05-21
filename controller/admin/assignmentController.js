@@ -27,6 +27,20 @@ export const assignOrderToRider = async (req, res) => {
       return res.status(404).json({ success: false, message: "Active rider not found" });
     }
 
+    // Determine the delivery date: use the scheduler-set current_delivery_date, or default to today
+    const deliveryDate = orders[0].current_delivery_date
+      ? new Date(orders[0].current_delivery_date).toISOString().split("T")[0]
+      : new Date().toISOString().split("T")[0];
+
+    // Check if delivery is already completed for this date
+    const [alreadyDelivered] = await pool.query(
+      `SELECT id FROM order_assignments WHERE order_id = ? AND delivery_date = ? AND status = 'delivered'`,
+      [order_id, deliveryDate]
+    );
+    if (alreadyDelivered.length > 0) {
+      return res.status(400).json({ success: false, message: "This order has already been delivered for this date" });
+    }
+
     // Check for existing pending/active assignment
     const [existingAssignment] = await pool.query(
       `SELECT id FROM order_assignments WHERE order_id = ? AND status NOT IN ('rejected', 'failed', 'delivered')`,
@@ -57,9 +71,9 @@ export const assignOrderToRider = async (req, res) => {
     await pool.query(`UPDATE orders SET delivery_otp = ? WHERE id = ?`, [otp, order_id]);
 
     const [assignment] = await pool.query(
-      `INSERT INTO order_assignments (order_id, rider_id, cod_amount, distance_km, estimated_time_minutes, admin_notes)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [order_id, rider_id, codAmount, distanceKm, estimatedMinutes, admin_notes || null]
+      `INSERT INTO order_assignments (order_id, rider_id, cod_amount, distance_km, estimated_time_minutes, admin_notes, delivery_date)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [order_id, rider_id, codAmount, distanceKm, estimatedMinutes, admin_notes || null, deliveryDate]
     );
 
     await pool.query(
