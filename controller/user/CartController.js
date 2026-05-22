@@ -3,7 +3,7 @@ import pool from "../../config.js";
 export const AddtoCart = async (req, res) => {
   try {
     const { user } = req; 
-    const { product_id, price } = req.body;
+    const { product_id, price, variant_name } = req.body;
 
     if (!user) {
       return res.status(401).json({ success: false, message: "Unauthorized" });
@@ -16,15 +16,17 @@ export const AddtoCart = async (req, res) => {
     }
 
 
-    const [[alreadyincart]]= await pool.query(`SELECT * FROM carts where product_id = ? 
-      AND user_id = ? `,[product_id,user.id])
+    const [[alreadyincart]]= await pool.query(
+      `SELECT * FROM carts where product_id = ? AND user_id = ? AND (variant_name = ? OR (variant_name IS NULL AND ? IS NULL))`,
+      [product_id, user.id, variant_name || null, variant_name || null]
+    );
 if(alreadyincart){
     return res
         .json({ success: true, message: "Allready in cart" });
 }
     await pool.execute(
-      `INSERT INTO carts (product_id, price, user_id) VALUES (?, ?, ?)`,
-      [product_id, price, user.id]
+      `INSERT INTO carts (product_id, price, user_id, variant_name) VALUES (?, ?, ?, ?)`,
+      [product_id, price, user.id, variant_name || null]
     );
 
     return res.json({
@@ -44,8 +46,12 @@ if(alreadyincart){
 export const allReadyInCArt=async(req,res)=>{
     const { user } = req; 
     const { product_id } = req.params;
+    const { variant_name } = req.query;
 
-    const [[allreadycart]]= await pool.query(`SELECT * FROM carts WHERE product_id = ? AND  user_id = ?`,[product_id,user.id])
+    const [[allreadycart]]= await pool.query(
+      `SELECT * FROM carts WHERE product_id = ? AND user_id = ? AND (variant_name = ? OR (variant_name IS NULL AND ? IS NULL))`,
+      [product_id, user.id, variant_name || null, variant_name || null]
+    );
 
 if(allreadycart){
   return res.json({success:true,message:"Allready in cart"})
@@ -54,10 +60,6 @@ else{
     return res.json({success:false,message:"Not in cart"})
 
 }
-
-
-
-
 }
 
 
@@ -72,6 +74,7 @@ const [carts] = await pool.query(
       carts.quantity,
       carts.price AS cart_price,
       (carts.quantity * carts.price) AS total_price,
+      carts.variant_name,
       products.name,
       products.price AS product_price,
       products.images
@@ -202,6 +205,7 @@ export const getSingleCart = async (req, res) => {
       carts.quantity,
       carts.price AS cart_price,
       (carts.quantity * carts.price) AS total_price,
+      carts.variant_name,
       products.id AS product_id,
       products.name,
       products.one_time,

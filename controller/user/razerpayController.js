@@ -121,9 +121,9 @@ export const createOrderDevBypass = async (req, res) => {
 
     for (const item of cart_items) {
       await pool.query(
-        `INSERT INTO order_items (order_id, product_id, quantity, price, start_date)
-         VALUES (?, ?, ?, ?, CURDATE())`,
-        [orderId, item.product_id, item.quantity, item.price]
+        `INSERT INTO order_items (order_id, product_id, quantity, price, variant_name, start_date)
+         VALUES (?, ?, ?, ?, ?, CURDATE())`,
+        [orderId, item.product_id, item.quantity, item.price, item.variant_name || null]
       );
     }
 
@@ -270,9 +270,9 @@ export const verifyOrder = async (req, res) => {
       // Insert order items
       for (const item of cart_items) {
         await connection.query(
-          `INSERT INTO order_items (order_id, product_id, quantity, price, start_date)
-           VALUES (?, ?, ?, ?, CURDATE())`,
-          [orderId, item.product_id, item.quantity, item.price]
+          `INSERT INTO order_items (order_id, product_id, quantity, price, variant_name, start_date)
+           VALUES (?, ?, ?, ?, ?, CURDATE())`,
+          [orderId, item.product_id, item.quantity, item.price, item.variant_name || null]
         );
       }
 
@@ -350,9 +350,9 @@ export const verifyOrder = async (req, res) => {
 
       for (const item of cart_items) {
         await pool.query(
-          `INSERT INTO order_items (order_id, product_id, quantity, price, start_date)
-           VALUES (?, ?, ?, ?, CURDATE())`,
-          [orderId, item.product_id, item.quantity, item.price]
+          `INSERT INTO order_items (order_id, product_id, quantity, price, variant_name, start_date)
+           VALUES (?, ?, ?, ?, ?, CURDATE())`,
+          [orderId, item.product_id, item.quantity, item.price, item.variant_name || null]
         );
       }
 

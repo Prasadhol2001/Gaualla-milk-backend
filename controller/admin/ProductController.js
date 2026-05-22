@@ -165,6 +165,8 @@ export const creatProduct= async(req,res)=>{
       details,
       one_time,
       description2,
+      is_best_seller,
+      variants,
     } = req.body;
 
     // ✅ Validate required fields
@@ -205,12 +207,14 @@ export const creatProduct= async(req,res)=>{
       : JSON.stringify([]);
 
     // ✅ Convert one_time to boolean
-    const oneTimeFlag = one_time === 'true' || one_time === true ? 1 : 0;
+    const oneTimeFlag = one_time === 'true' || one_time === true || one_time === 1 || one_time === '1' ? 1 : 0;
+    const bestSellerFlag = is_best_seller === 'true' || is_best_seller === true || is_best_seller === 1 || is_best_seller === '1' ? 1 : 0;
+    const variantsVal = variants ? (typeof variants === 'string' ? variants : JSON.stringify(variants)) : null;
 
     await pool.execute(
       `INSERT INTO products 
-      (category_id, name, slug, description, price, old_price, stock, unit_quantity, details, one_time, images, description2) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (category_id, name, slug, description, price, old_price, stock, unit_quantity, details, one_time, images, description2, is_best_seller, variants) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         categoryIdNum,
         name.trim(),
@@ -224,6 +228,8 @@ export const creatProduct= async(req,res)=>{
         oneTimeFlag,
         images,
         description2 || null,
+        bestSellerFlag,
+        variantsVal,
       ]
     );
 
@@ -239,19 +245,7 @@ try {
 
 const [product]= await pool.query(`
       SELECT 
-        p.id,
-        p.name,
-        p.slug,
-        p.description,
-        p.price,
-        p.old_price,
-        p.stock,
-        p.images,
-        p.one_time,
-        p.details,
-        p.unit_quantity,
-        p.created_at,
-        p.updated_at,
+        p.*,
         c.name AS category
       FROM products p
       JOIN categories c ON p.category_id = c.id
@@ -279,19 +273,7 @@ const getProductByCategory = async (req, res) => {
     if (category === "all") {
       const [product] = await pool.query(`
         SELECT 
-          p.id,
-          p.name,
-          p.slug,
-          p.description,
-          p.price,
-          p.old_price,
-          p.stock,
-          p.images,
-          p.one_time,
-          p.details,
-          p.unit_quantity,
-          p.created_at,
-          p.updated_at,
+          p.*,
           c.name AS category
         FROM products p
         JOIN categories c ON p.category_id = c.id
@@ -323,19 +305,7 @@ const getProductByCategory = async (req, res) => {
       
       const [products] = await pool.query(
         `SELECT 
-            p.id,
-            p.name,
-            p.slug,
-            p.description,
-            p.price,
-            p.old_price,
-            p.stock,
-            p.images,
-            p.one_time,
-            p.details,
-            p.unit_quantity,
-            p.created_at,
-            p.updated_at,
+            p.*,
             c.name AS category
           FROM products p
           JOIN categories c ON p.category_id = c.id
@@ -445,6 +415,8 @@ const updateProduct = async (req, res) => {
       details,
       one_time,
       description2,
+      is_best_seller,
+      variants,
     } = req.body;
 
     // Get current product
@@ -509,7 +481,9 @@ const updateProduct = async (req, res) => {
     }
 
     // Convert one_time to boolean
-    const oneTimeFlag = one_time === 'true' || one_time === true ? 1 : 0;
+    const oneTimeFlag = one_time === 'true' || one_time === true || one_time === 1 || one_time === '1' ? 1 : 0;
+    const bestSellerFlag = is_best_seller === 'true' || is_best_seller === true || is_best_seller === 1 || is_best_seller === '1' ? 1 : 0;
+    const variantsVal = variants ? (typeof variants === 'string' ? variants : JSON.stringify(variants)) : null;
 
     // Update product
     await pool.execute(
@@ -526,6 +500,8 @@ const updateProduct = async (req, res) => {
         images = ?,
         one_time = ?,
         description2 = ?,
+        is_best_seller = ?,
+        variants = ?,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?`,
       [
@@ -541,6 +517,8 @@ const updateProduct = async (req, res) => {
         images,
         oneTimeFlag,
         description2 || null,
+        bestSellerFlag,
+        variantsVal,
         id,
       ]
     );

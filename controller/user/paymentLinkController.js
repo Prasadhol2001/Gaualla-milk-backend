@@ -70,14 +70,15 @@ export const createOrderPaymentLink = async (req, res) => {
       for (const item of cart_items) {
         await connection.query(
           `INSERT INTO order_items (
-            order_id, product_id, quantity, price, discount, start_date
-          ) VALUES (?, ?, ?, ?, ?, CURDATE())`,
+            order_id, product_id, quantity, price, discount, variant_name, start_date
+          ) VALUES (?, ?, ?, ?, ?, ?, CURDATE())`,
           [
             orderId,
             item.product_id,
             item.quantity,
             item.price,
             discount / cart_items.length, // Distribute discount equally
+            item.variant_name || null,
           ]
         );
       }
