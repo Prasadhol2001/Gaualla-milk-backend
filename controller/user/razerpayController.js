@@ -2,6 +2,7 @@ import Razorpay  from "razorpay";
 import crypto from "crypto";
 import pool from "../../config.js";
 import { notifyUser } from "../../services/firebaseService.js";
+import { decrementStock } from "../../services/stockService.js";
 
  const razorpay= new  Razorpay({
       key_id: process.env.RAZORPAY_KEY_ID,
@@ -126,6 +127,9 @@ export const createOrderDevBypass = async (req, res) => {
         [orderId, item.product_id, item.quantity, item.price, item.variant_name || null]
       );
     }
+
+    // Decrement product stock
+    await decrementStock(cart_items, pool);
 
     return res.json({
       success: true,
@@ -276,6 +280,9 @@ export const verifyOrder = async (req, res) => {
         );
       }
 
+      // Decrement product stock
+      await decrementStock(cart_items, connection);
+
       // Insert Wallet Transaction debit
       await connection.query(
         `INSERT INTO wallet_transactions (wallet_id, type, source, amount, main_amount, cashback_amount, reference_id, title, description, status)
@@ -355,6 +362,9 @@ export const verifyOrder = async (req, res) => {
           [orderId, item.product_id, item.quantity, item.price, item.variant_name || null]
         );
       }
+
+      // Decrement product stock
+      await decrementStock(cart_items, pool);
 
       try {
         const [existing] = await pool.query(

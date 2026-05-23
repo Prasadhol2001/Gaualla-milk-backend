@@ -1,4 +1,5 @@
 import pool from "../../config.js";
+import { restockOrderItems } from "../../services/stockService.js";
 
 /**
  * Get all orders for admin
@@ -394,6 +395,14 @@ export const updateOrderStatus = async (req, res) => {
       `UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       [status, id]
     );
+
+    // If order was not previously cancelled/refunded, but is now cancelled/refunded, restock the products
+    const isNowCancelled = ["cancelled", "refunded"].includes(status);
+    const wasPreviouslyCancelled = ["cancelled", "refunded"].includes(orders[0].status);
+    
+    if (isNowCancelled && !wasPreviouslyCancelled) {
+      await restockOrderItems(id, pool);
+    }
 
     return res.json({
       success: true,

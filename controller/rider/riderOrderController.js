@@ -1,6 +1,7 @@
 import pool from "../../config.js";
 import { emitToAdmins, emitOrderUpdate } from "../../services/socketService.js";
 import { createNotification, notifyUser } from "../../services/firebaseService.js";
+import { restockOrderItems } from "../../services/stockService.js";
 
 export const getAssignedOrders = async (req, res) => {
   try {
@@ -571,6 +572,9 @@ export const markFailed = async (req, res) => {
       `UPDATE orders SET delivery_status = 'failed', status = 'cancelled' WHERE id = ?`,
       [assignments[0].order_id]
     );
+
+    // Restock the items since the order is cancelled
+    await restockOrderItems(assignments[0].order_id, connection);
 
     // 2. Automated Refund if paid via wallet
     if (assignments[0].payment_method === 'wallet' && assignments[0].payment_status === 'paid') {

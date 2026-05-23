@@ -5,6 +5,7 @@ import {
   cancelPaymentLink,
 } from "../../services/paymentLinkService.js";
 import pool from "../../config.js";
+import { decrementStock } from "../../services/stockService.js";
 
 /**
  * Create a UPI-first payment link for an order
@@ -82,6 +83,9 @@ export const createOrderPaymentLink = async (req, res) => {
           ]
         );
       }
+
+      // Decrement product stock
+      await decrementStock(cart_items, connection);
 
       // Create payment link
       const expireBy = expire_by_hours * 3600; // Convert hours to seconds
