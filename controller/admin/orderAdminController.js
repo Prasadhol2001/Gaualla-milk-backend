@@ -112,6 +112,7 @@ export const getAllOrders = async (req, res) => {
             oi.product_id,
             oi.quantity,
             oi.price,
+            oi.variant_name,
             p.name AS product_name,
             p.images AS product_image
           FROM order_items oi
@@ -299,6 +300,7 @@ export const getOrderById = async (req, res) => {
         oi.product_id,
         oi.quantity,
         oi.price,
+        oi.variant_name,
         oi.start_date,
         oi.last_delivery_date,
         p.name AS product_name,
