@@ -368,6 +368,7 @@ export const getOrderById = async (req, res) => {
  * Update order status
  */
 export const updateOrderStatus = async (req, res) => {
+  let connection;
   try {
     const { id } = req.params;
     const { status } = req.body;
@@ -381,34 +382,145 @@ export const updateOrderStatus = async (req, res) => {
       });
     }
 
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+
     // Check if order exists
-    const [orders] = await pool.query(`SELECT * FROM orders WHERE id = ?`, [id]);
+    const [orders] = await connection.query(`SELECT * FROM orders WHERE id = ? FOR UPDATE`, [id]);
     if (orders.length === 0) {
+      connection.release();
       return res.status(404).json({
         success: false,
         message: "Order not found",
       });
     }
 
-    // Update order status
-    await pool.query(
-      `UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      [status, id]
-    );
+    const order = orders[0];
+    const isNowCancelled = ["cancelled", "refunded"].includes(status);
+    const wasPreviouslyCancelled = ["cancelled", "refunded"].includes(order.status);
+
+    // Update order status and clear rider assignment fields if cancelled
+    if (isNowCancelled) {
+      await connection.query(
+        `UPDATE orders SET status = ?, delivery_status = 'failed', assigned_rider_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [status, id]
+      );
+    } else {
+      await connection.query(
+        `UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [status, id]
+      );
+    }
 
     // If order was not previously cancelled/refunded, but is now cancelled/refunded, restock the products
-    const isNowCancelled = ["cancelled", "refunded"].includes(status);
-    const wasPreviouslyCancelled = ["cancelled", "refunded"].includes(orders[0].status);
-    
     if (isNowCancelled && !wasPreviouslyCancelled) {
-      await restockOrderItems(id, pool);
+      await restockOrderItems(id, connection);
+
+      // Cancel all active and pending rider assignments for this order
+      await connection.query(
+        `UPDATE order_assignments 
+         SET status = 'failed', admin_notes = 'Cancelled by Admin', updated_at = CURRENT_TIMESTAMP 
+         WHERE order_id = ? AND status IN ('pending', 'accepted', 'picked_up', 'in_transit')`,
+        [id]
+      );
+
+      // Perform Wallet Refund if paid upfront
+      const isPaid = order.payment_status === 'paid';
+      const isRefundablePayment = ['wallet', 'razorpay'].includes(order.payment_method);
+
+      if (isRefundablePayment && isPaid) {
+        const site_user_id = order.site_user_id;
+
+        // Calculate correct refund amount
+        let refundAmount = parseFloat(order.total_amount);
+        const isSubscription = ["daily", "alternative", "weekly", "monthly", "custom_dates"].includes(order.type);
+
+        if (isSubscription) {
+          // Calculate daily cost
+          const [items] = await connection.query(
+            `SELECT price, quantity FROM order_items WHERE order_id = ?`,
+            [id]
+          );
+          let dailyAmount = 0.00;
+          for (const item of items) {
+            dailyAmount += parseFloat(item.price) * parseInt(item.quantity);
+          }
+
+          // Get delivered count
+          const [deliveredResult] = await connection.query(
+            `SELECT COUNT(*) AS count FROM order_assignments WHERE order_id = ? AND status = 'delivered'`,
+            [id]
+          );
+          const deliveredCount = deliveredResult[0].count;
+
+          // Remaining amount = total_amount - (deliveredCount * dailyAmount)
+          const consumedAmount = deliveredCount * dailyAmount;
+          refundAmount = Math.max(0, refundAmount - consumedAmount);
+        }
+
+        if (refundAmount > 0) {
+          // Check if already refunded
+          const referenceId = `admin_cancel_${id}`;
+          const [existingRefund] = await connection.query(
+            `SELECT id FROM wallet_transactions WHERE reference_id = ? AND source = 'refund'`,
+            [referenceId]
+          );
+
+          if (existingRefund.length === 0) {
+            // Select or create wallet
+            const [wallets] = await connection.query(
+              `SELECT id, main_balance FROM wallets WHERE user_id = ? FOR UPDATE`,
+              [site_user_id]
+            );
+
+            if (wallets.length > 0) {
+              const walletId = wallets[0].id;
+              const oldMain = parseFloat(wallets[0].main_balance);
+              const newMain = oldMain + refundAmount;
+
+              // Credit back to main balance
+              await connection.query(
+                `UPDATE wallets SET main_balance = ? WHERE id = ?`,
+                [newMain, walletId]
+              );
+
+              // Log refund transaction
+              await connection.query(
+                `INSERT INTO wallet_transactions (wallet_id, type, source, amount, main_amount, cashback_amount, reference_id, title, description, status)
+                 VALUES (?, 'credit', 'refund', ?, ?, 0.00, ?, 'Refund for Cancelled Order', ?, 'success')`,
+                [
+                  walletId,
+                  refundAmount,
+                  refundAmount,
+                  referenceId,
+                  `Refund for order #${id} cancelled by admin (Calculated refund amount: ₹${refundAmount.toFixed(2)})`
+                ]
+              );
+
+              // Update order payment status
+              await connection.query(
+                `UPDATE orders SET payment_status = 'refunded' WHERE id = ?`,
+                [id]
+              );
+            }
+          }
+        }
+      }
     }
+
+    await connection.commit();
+    connection.release();
+    connection = null;
 
     return res.json({
       success: true,
-      message: "Order status updated successfully",
+      message: "Order status updated successfully and refund processed if applicable",
     });
   } catch (error) {
+    if (connection) {
+      await connection.rollback();
+      connection.release();
+    }
     console.error("Error updating order status:", error);
     return res.status(500).json({
       success: false,

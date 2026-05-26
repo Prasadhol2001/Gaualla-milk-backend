@@ -76,8 +76,19 @@ export const getActiveOrder = async (req, res) => {
 export const getOrderHistory = async (req, res) => {
   try {
     const riderId = req.rider.id;
-    const { page = 1, limit = 20 } = req.query;
+    const { page = 1, limit = 20, status } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    let statusFilter = "AND oa.status IN ('delivered', 'failed', 'rejected')";
+    let countStatusFilter = "AND status IN ('delivered', 'failed', 'rejected')";
+
+    if (status === 'completed' || status === 'delivered') {
+      statusFilter = "AND oa.status = 'delivered'";
+      countStatusFilter = "AND status = 'delivered'";
+    } else if (status === 'cancelled' || status === 'failed') {
+      statusFilter = "AND oa.status IN ('failed', 'rejected')";
+      countStatusFilter = "AND status IN ('failed', 'rejected')";
+    }
 
     const [assignments] = await pool.query(
       `SELECT 
@@ -90,14 +101,14 @@ export const getOrderHistory = async (req, res) => {
       JOIN orders o ON oa.order_id = o.id
       LEFT JOIN users u ON o.site_user_id = u.id
       LEFT JOIN newaddresses a ON o.address_id = a.id
-      WHERE oa.rider_id = ? AND oa.status IN ('delivered', 'failed', 'rejected')
+      WHERE oa.rider_id = ? ${statusFilter}
       ORDER BY oa.delivered_at DESC, oa.assigned_at DESC
       LIMIT ? OFFSET ?`,
       [riderId, parseInt(limit), offset]
     );
 
     const [countResult] = await pool.query(
-      `SELECT COUNT(*) as total FROM order_assignments WHERE rider_id = ? AND status IN ('delivered', 'failed', 'rejected')`,
+      `SELECT COUNT(*) as total FROM order_assignments WHERE rider_id = ? ${countStatusFilter}`,
       [riderId]
     );
 
@@ -544,7 +555,7 @@ export const markFailed = async (req, res) => {
     }
 
     const [assignments] = await pool.query(
-      `SELECT oa.*, o.site_user_id, o.payment_status, o.total_amount, o.payment_method
+      `SELECT oa.*, o.site_user_id, o.payment_status, o.total_amount, o.payment_method, o.type AS order_type
        FROM order_assignments oa
        JOIN orders o ON oa.order_id = o.id
        WHERE oa.id = ? AND oa.rider_id = ?`,
@@ -559,6 +570,8 @@ export const markFailed = async (req, res) => {
       return res.status(400).json({ success: false, message: "Order cannot be marked as failed from current status" });
     }
 
+    const isSubscription = ["daily", "alternative", "weekly", "monthly", "custom_dates"].includes(assignments[0].order_type);
+
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
@@ -568,23 +581,48 @@ export const markFailed = async (req, res) => {
       [id]
     );
 
-    await connection.query(
-      `UPDATE orders SET delivery_status = 'failed', status = 'cancelled' WHERE id = ?`,
-      [assignments[0].order_id]
-    );
+    if (isSubscription) {
+      await connection.query(
+        `UPDATE orders SET delivery_status = 'failed', status = 'processing' WHERE id = ?`,
+        [assignments[0].order_id]
+      );
+    } else {
+      await connection.query(
+        `UPDATE orders SET delivery_status = 'failed', status = 'cancelled' WHERE id = ?`,
+        [assignments[0].order_id]
+      );
+    }
 
-    // Restock the items since the order is cancelled
+    // Restock the items since the order is cancelled/failed today
     await restockOrderItems(assignments[0].order_id, connection);
 
-    // 2. Automated Refund if paid via wallet
-    if (assignments[0].payment_method === 'wallet' && assignments[0].payment_status === 'paid') {
-      const site_user_id = assignments[0].site_user_id;
-      const amount = parseFloat(assignments[0].total_amount);
+    // 2. Automated Refund if paid via wallet or online (razorpay)
+    const isPaid = assignments[0].payment_status === 'paid';
+    const isRefundablePayment = ['wallet', 'razorpay'].includes(assignments[0].payment_method);
 
-      // Check if already refunded
+    if (isRefundablePayment && isPaid) {
+      const site_user_id = assignments[0].site_user_id;
+      
+      // Calculate correct refund amount
+      let refundAmount = parseFloat(assignments[0].total_amount);
+      if (isSubscription) {
+        const [items] = await connection.query(
+          `SELECT price, quantity FROM order_items WHERE order_id = ?`,
+          [assignments[0].order_id]
+        );
+        let dailyAmount = 0.00;
+        for (const item of items) {
+          dailyAmount += parseFloat(item.price) * parseInt(item.quantity);
+        }
+        refundAmount = dailyAmount;
+      }
+
+      // Check if already refunded for this specific delivery assignment/day to prevent duplicate refunds
+      const referenceId = isSubscription ? `refund_sub_asn_${id}` : String(assignments[0].order_id);
+      
       const [existingRefund] = await connection.query(
         `SELECT id FROM wallet_transactions WHERE reference_id = ? AND source = 'refund'`,
-        [String(assignments[0].order_id)]
+        [referenceId]
       );
 
       if (existingRefund.length === 0) {
@@ -597,7 +635,7 @@ export const markFailed = async (req, res) => {
         if (wallets.length > 0) {
           const walletId = wallets[0].id;
           const oldMain = parseFloat(wallets[0].main_balance);
-          const newMain = oldMain + amount;
+          const newMain = oldMain + refundAmount;
 
           // Credit back to main balance
           await connection.query(
@@ -611,18 +649,21 @@ export const markFailed = async (req, res) => {
              VALUES (?, 'credit', 'refund', ?, ?, 0.00, ?, 'Refund for Failed Delivery', ?, 'success')`,
             [
               walletId,
-              amount,
-              amount,
-              String(assignments[0].order_id),
+              refundAmount,
+              refundAmount,
+              referenceId,
               `Refund for order #${assignments[0].order_id} (Delivery failed: ${reason})`
             ]
           );
 
-          // Update order payment status
-          await connection.query(
-            `UPDATE orders SET payment_status = 'refunded' WHERE id = ?`,
-            [assignments[0].order_id]
-          );
+          // Update order payment status only for one-time orders. 
+          // For subscriptions, keep it 'paid' so future schedules continue to run.
+          if (!isSubscription) {
+            await connection.query(
+              `UPDATE orders SET payment_status = 'refunded' WHERE id = ?`,
+              [assignments[0].order_id]
+            );
+          }
         }
       }
     }
@@ -642,9 +683,10 @@ export const markFailed = async (req, res) => {
       delivery_status: "failed",
     });
 
+    const hasRefund = isRefundablePayment && isPaid;
     notifyUser(assignments[0].site_user_id,
       "Delivery Failed",
-      `We couldn't deliver your order. ${assignments[0].payment_method === 'wallet' ? 'Refund initiated to your wallet.' : 'Our team will contact you soon.'}`,
+      `We couldn't deliver your order. ${hasRefund ? 'Refund initiated to your wallet.' : 'Our team will contact you soon.'}`,
       "order_failed",
       { order_id: String(assignments[0].order_id) }
     ).catch(() => {});
