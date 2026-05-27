@@ -29,6 +29,8 @@ import riderAdminRoutes from "./Route/riderAdminRoutes.js"
 import assignmentRoutes from "./Route/assignmentRoutes.js"
 import settlementRoutes from "./Route/settlementRoutes.js"
 import wishlistRoutes from "./Route/wishlistRoutes.js"
+import splashMessageRoutes from "./Route/splashMessageRoutes.js"
+import { splashMessageController } from "./controller/admin/splashMessageController.js"
 import { initSocket } from "./services/socketService.js"
 import { startScheduler } from "./services/schedulerService.js"
 
@@ -126,6 +128,10 @@ app.use("/api/rider", riderRoutes);
 app.use("/admin/riders", riderAdminRoutes);
 app.use("/admin/assignments", assignmentRoutes);
 app.use("/admin/settlements", settlementRoutes);
+app.use("/admin/splash", splashMessageRoutes);
+
+// Public splash message for user app (no auth required)
+app.get("/api/user/splash-message", splashMessageController.getActiveMessageForToday);
 
 const PORT = process.env.PORT || 9002;
 
