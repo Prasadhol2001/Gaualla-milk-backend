@@ -27,8 +27,8 @@ const createCategory = async (req, res) => {
     console.log("Inserting category:", category.toLowerCase(), filename);
 
     const [store] = await pool.execute(
-      `INSERT INTO categories (name, image, status) VALUES (?, ?, ?)`,
-      [category.toLowerCase(), filename, 'active']
+      `INSERT INTO categories (name, image) VALUES (?, ?)`,
+      [category.toLowerCase(), filename]
     );
 
     console.log("Insert result:", store);
